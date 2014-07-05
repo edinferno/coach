@@ -1,0 +1,13 @@
+# Publish Mode
+# 0 - only top camera
+# 1 - only bottom camera
+# 2 - both cameras
+# 3 - only selected camera
+# 4 - do not publihs, but record locally
+uint8 pub_mode
+
+# Desired FPS
+float32 fps
+
+---
+

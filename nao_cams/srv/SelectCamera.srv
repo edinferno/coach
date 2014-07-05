@@ -1,0 +1,14 @@
+# The id of the desired camera
+# 0 - top
+# 1 - bottom
+uint8 camera_id
+
+# Desired FPS
+float32 fps
+
+# Desired image size
+uint16 width
+uint16 height
+
+---
+
