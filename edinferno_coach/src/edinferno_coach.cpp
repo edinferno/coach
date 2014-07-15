@@ -77,7 +77,15 @@ int main(int argc, char** argv)
 
     // Create an ALMotionProxy to call the methods to move NAO's head.
     AL::ALMotionProxy motion("127.0.0.1", 9559);
-    motion.wakeUp();
+
+
+    // Ensure sitting position
+    // motion.wakeUp();
+    motion.setStiffnesses(AL::ALValue::array("LHipYawPitch", "LHipRoll", "LHipPitch",
+                          					 "RHipYawPitch", "RHipRoll", "RHipPitch"),
+    					  AL::ALValue::array(0.3f, 0.3f, 0.3f,
+    					                     0.3f, 0.3f, 0.3f));
+
     // Make sure the head is stiff to be able to move it
     motion.setStiffnesses(joint_names, AL::ALValue::array(1.0f, 1.0f));
 
@@ -85,19 +93,25 @@ int main(int argc, char** argv)
     float head_yaw = 0.0f, head_pitch = 0.0f;
     float d_yaw, d_pitch;
 	motion.setAngles(joint_names, AL::ALValue::array(head_yaw, head_pitch), 0.1f);
+	const float HEAD_YAW_MIN = -1.5f, HEAD_YAW_MAX = 1.5f, HEAD_PITCH_MIN = -0.45f, HEAD_PITCH_MAX = 0.45f;
+	float searching_head_yaw, searching_head_pitch;
 
+	const int REMEMBER_BALL = 50;
+	int ball_not_seen = 0;
 	while(ros::ok())
 	{
 		if(img_available)
 		{
 			img_available = false;
-			std::cout << "[edinferno_coach.cpp] Segmentation " << std::endl;
+			// std::cout << "[edinferno_coach.cpp] Segmentation " << std::endl;
 			Segmentation::SegmentImage(img, pixel_map);
-			std::cout << "[edinferno_coach.cpp] Detection " << std::endl;
+			// std::cout << "[edinferno_coach.cpp] Detection " << std::endl;
 			DetectedBall b = BallDetection::Detect(pixel_map);
-			std::cout << "[edinferno_coach.cpp] Control " << std::endl;
+			// std::cout << "[edinferno_coach.cpp] Control " << std::endl;
 			if(b.detected)
 			{
+				ball_not_seen = 0;
+
 				cv::circle(img, b.cntr, b.r, cv::Scalar(0,255,255), 2, 8, 0);
 				cv::circle(img, b.cntr, 2, cv::Scalar(255,0,0), 2, 8, 0);
 
@@ -105,32 +119,56 @@ int main(int argc, char** argv)
 				if(-0.001 < d_yaw && d_yaw < 0.001) d_yaw = 0;
 
 				head_yaw -= d_yaw; // +ve is looking to the left
-				head_yaw = (head_yaw < -1.5f) ? -1.5f : (head_yaw > 1.5f) ? 1.5f : head_yaw;
+				head_yaw = (head_yaw < HEAD_YAW_MIN) ? HEAD_YAW_MIN : (head_yaw > HEAD_YAW_MAX) ? HEAD_YAW_MAX : head_yaw;
 
 				d_pitch = 0.0005 * (b.cntr.y - img.rows / 2);
 				if(-0.0001 < d_pitch && d_pitch < 0.0001) d_pitch = 0;
 
 				head_pitch += d_pitch;// +ve is looking down
-				head_pitch = (head_pitch < -1.0f) ? -1.0f : (head_pitch > 1.0f) ? 1.0f : head_pitch;
+				head_pitch = (head_pitch < HEAD_PITCH_MIN) ? HEAD_PITCH_MIN : (head_pitch > HEAD_PITCH_MAX) ? HEAD_PITCH_MAX : head_pitch;
 
 				motion.setAngles(joint_names, AL::ALValue::array(head_yaw, head_pitch), 0.8f);
+			}
+			else
+			{
+				++ball_not_seen;
+			}
+
+			// std::cout << "[edinferno_coach.cpp] ball_not_seen " << ball_not_seen << std::endl;
+
+			if(ball_not_seen >= REMEMBER_BALL)
+			{
+				std::vector<float> angls = motion.getAngles(joint_names, true);
+
+				float err_yaw = fabs(angls[0] - searching_head_yaw);
+				float err_pitch = fabs(angls[1] - searching_head_pitch);
+				// std::cout << "[edinferno_coach.cpp] angls " << angls[0] << " " << angls[1] << std::endl;
+				// std::cout << "[edinferno_coach.cpp] " << err_yaw << " " << err_pitch << std::endl;
+				if(ball_not_seen == REMEMBER_BALL ||
+				   (err_yaw < 0.25 && err_pitch < 0.25))
+				{
+
+					searching_head_yaw = HEAD_YAW_MIN + (HEAD_YAW_MAX - HEAD_YAW_MIN) * ((rand() % 101) / 100.0f);
+					searching_head_pitch = HEAD_PITCH_MIN + (HEAD_PITCH_MAX - HEAD_PITCH_MIN) * ((rand() % 101) / 100.0f);
+					// std::cout << "[edinferno_coach.cpp] New Searching Angles " << searching_head_yaw << " " << searching_head_pitch << std::endl;
+					motion.setAngles(joint_names, AL::ALValue::array(searching_head_yaw, searching_head_pitch), 0.1f);
+				}
 			}
 
     		ConvertImage::MatToMsgCopy(img, "/world", msg);
     		seg_pub.publish(msg);
 
-    		std::cout << "[edinferno_coach.cpp] Published " << std::endl;
+    		// std::cout << "[edinferno_coach.cpp] Published " << std::endl;
 		}
 		else
 		{
 			std::cout << "[edinferno_coach.cpp] No image " << std::endl;
 		}
-		std::cout << "[edinferno_coach.cpp] SpinOnce " << std::endl;
+		// std::cout << "[edinferno_coach.cpp] SpinOnce " << std::endl;
 		ros::spinOnce();
-		std::cout << "[edinferno_coach.cpp] Sleep " << std::endl;
+		// std::cout << "[edinferno_coach.cpp] Sleep " << std::endl;
 		r.sleep();
 	}
-
 	motion.setStiffnesses(joint_names, AL::ALValue::array(0.0f, 0.0f));
 
 	return 0;
