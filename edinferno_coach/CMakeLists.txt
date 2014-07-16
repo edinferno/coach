@@ -71,7 +71,9 @@ include_directories(include
  	${OpenCV_INCLUDE_DIRS}
 )
 
-add_executable(edinferno_coach src/edinferno_coach.cpp src/lsd_opencv.cpp src/segmentation.cpp src/ball_detection.cpp)
+add_executable(edinferno_coach src/edinferno_coach.cpp src/game.cpp src/lsd_opencv.cpp src/segmentation.cpp src/ball_detection.cpp)
+add_executable(calibration src/calibration.cpp)
+
 target_link_libraries(edinferno_coach
 	${catkin_LIBRARIES}
     ${OpenCV_LIBS}
@@ -81,7 +83,17 @@ target_link_libraries(edinferno_coach
     alvalue
 )
 
+target_link_libraries(calibration
+    ${catkin_LIBRARIES}
+    ${OpenCV_LIBS}
+    alcommon
+    alerror
+    alproxies
+    alvalue
+)
+
 add_dependencies(edinferno_coach convert_image)
+add_dependencies(calibration convert_image)
 
 ## Declare a cpp library
 # add_library(edinferno_coach

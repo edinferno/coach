@@ -5,39 +5,37 @@
 
 #include <alerror/alerror.h>
 #include <alproxies/almotionproxy.h>
+#include <alproxies/alledsproxy.h>
+
+#include <vector>
+#include <fstream>
+
+using std::ifstream;
+using std::vector;
 
 #include "segmentation.hpp"
 #include "ball_detection.hpp"
 #include "lsd_opencv.hpp"
+#include "game.hpp"
 
+const float MIN_YAW = -0.5, MAX_YAW = 0.5;
+const float MIN_PITCH = 0.2, MAX_PITCH = 0.45;
+const int YAW_POINTS = 5;
+const int PITCH_POINTS = 5;
+const float dYAW = (MAX_YAW - MIN_YAW) / (YAW_POINTS - 1);
+const float dPITCH = (MAX_PITCH - MIN_PITCH) / (PITCH_POINTS - 1);
 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+const float THRESH_DIST = 20.0f;  // 0.0f;
+const float MIN_THRESH_DIST = -THRESH_DIST;
+const float MAX_THRESH_DIST = +THRESH_DIST;
 
-#include "SPLCoachMessage.hpp"
-
-
-
-// LSD Example
-// ros::Publisher lines_pub = n.advertise<sensor_msgs::Image>("lines", 2);
-	// cv::Ptr<cv::LineSegmentDetector> lsd_std =
-		// cv::createLineSegmentDetectorPtr(cv::LSD_REFINE_NONE);
-
-	// while
-	//
-	// ConvertImage::MatToMsgCopy(img, "/world", msg);
-			// lines_pub.publish(msg);
-
-			// cv::cvtColor(img, img, CV_RGB2GRAY);
-			// std::vector<cv::Mat> c;
-			// ROS_INFO("SPLITTING");
-			// cv::split(img, c);
-			// ROS_INFO("SPLITTED");
-			// std::vector<cv::Vec4i> lines_std;
-    		// lsd_std->detect(c[1], lines_std);
-    		// lsd_std->drawSegments(img, lines_std);
-
+vector <vector <vector <cv::Point> > > calibration_matrix(
+	PITCH_POINTS,
+	vector <vector <cv::Point> >(
+		YAW_POINTS,
+		vector <cv::Point>(2)
+	)
+);
 
 cv::Mat img;
 cv::Mat pixel_map;
@@ -50,72 +48,63 @@ void selectedCameraCallback(const sensor_msgs::Image::ConstPtr& msg)
 	ConvertImage::MsgToMatCopy(msg, img);
 }
 
-const uint8_t TEAM_NUMBER = 9;
-enum GameStrategy {Defence, Attack, KeepCalmAndCarryOn};
-bool broadcastStrategy(GameStrategy strategy)
+GameStrategy decideStrategy(float yaw, float pitch, const cv::Point& pos, cv::Mat& img)
 {
-	//Initialize broadcast socket parameters
-    static const int broadcast_enable = 1;
+	float i = (pitch - MIN_PITCH) / dPITCH;
+	float j = (yaw - MIN_YAW) / dYAW;
+	// std::cout << "[edinferno_coach.cpp] i = " << i << " j = " << j << std::endl;
 
-    //Initialize UDP broadcast server info
-    struct sockaddr_in broadcast_servaddr;
-	bzero(&broadcast_servaddr, sizeof(broadcast_servaddr));
-	broadcast_servaddr.sin_family = AF_INET;
-	broadcast_servaddr.sin_addr.s_addr = inet_addr("255.255.255.255");
-	broadcast_servaddr.sin_port = htons(SPL_COACH_MESSAGE_PORT);
+	if (j < 0)
+	{
+		return Attack;
+	}
+	else if(j > YAW_POINTS - 1)
+	{
+		return Defence;
+	}
 
-    //Open the broadcast socket
-   	int broadcast_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (broadcast_socket < 0)
-    {
-    	std::cerr << "ERROR opening broadcast socket" << std::endl;
-    	return false;
-    }
+	if (i < 0 || i > PITCH_POINTS - 1)
+	{
+		return KeepCalmAndCarryOn;
+	}
 
-    //Set socket timeout to 10ms
-    // struct timeval timeout;
-    // timeout.tv_sec = 0;
-    // timeout.tv_usec = 1000 * 10;
-    // setsockopt (broadcast_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
+	int il = floor(i), ih = ceil(i);
+	int jl = floor(j), jh = ceil(j);
 
-    //Set the socket to broadcast mode
-    setsockopt(broadcast_socket, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable));
+	float bl = (1 - (i - il)) * (1 - (j - jl));
+	float br = (1 - (i - il)) * (1 - (jh - j));
+	float tl = (1 - (ih - i)) * (1 - (j - jl));
+	float tr = (1 - (ih - i)) * (1 - (jh - j));
 
-    SPLCoachMessage coach_msg;
+	cv::Point f(0, 0), s(0, 0);
+	f += bl * calibration_matrix[il][jl][0];
+	f += br * calibration_matrix[il][jh][0];
+	f += tl * calibration_matrix[ih][jl][0];
+	f += tr * calibration_matrix[ih][jh][0];
 
-  	coach_msg.team = TEAM_NUMBER;
+	s += bl * calibration_matrix[il][jl][1];
+	s += br * calibration_matrix[il][jh][1];
+	s += tl * calibration_matrix[ih][jl][1];
+	s += tr * calibration_matrix[ih][jh][1];
 
-    //Send strategy
-    memset (coach_msg.message, 0, SPL_COACH_MESSAGE_SIZE);
-    switch(strategy)
-    {
-    	case Defence:
-    		strcpy((char*)coach_msg.message, "Defence");
-    		break;
+	line(img, f, s, cv::Scalar(0, 0, 255), 2);
 
-    	case Attack:
-    	    strcpy((char*)coach_msg.message, "Attack");
-    		break;
+	cv::Point v1, v2;
+	v1 = f - s;
+	v2 = pos - s;
 
-    	case KeepCalmAndCarryOn:
-    		strcpy((char*)coach_msg.message, "Keep calm and carry on");
-    		break;
-    }
-    int n = sendto(broadcast_socket,
-                   &coach_msg,
-                   sizeof(SPLCoachMessage),
-                   0, // No flags
-                   (struct sockaddr*)&broadcast_servaddr,
-                   sizeof(broadcast_servaddr));
+	float area = v1.x * v2.y - v2.x * v1.y;
 
-    if(n != sizeof(SPLCoachMessage))
-    	return false;
+	float dist = area / sqrt(v1.x * v1.x + v1.y * v1.y);
 
-    close(broadcast_socket);
-
-    return true;
+	if (dist < MIN_THRESH_DIST) {
+		return Attack;
+	} else if (dist > MAX_THRESH_DIST) {
+		return Defence;
+	} else {
+		return KeepCalmAndCarryOn;
+	}
 }
-
 
 int main(int argc, char** argv)
 {
@@ -131,6 +120,30 @@ int main(int argc, char** argv)
 	}
 	std::cout << "[edinferno_coach.cpp] Color table loaded and converted. " << std::endl;
 
+	//***************************************************
+	//*********** Read calibration table ****************
+	//***************************************************
+	ifstream ifs("/home/nao/linecal.txt");
+	for (int i = 0; i < PITCH_POINTS; ++i) {
+		for (int j = 0; j < YAW_POINTS; ++j) {
+			ifs >> calibration_matrix[i][j][0].x;
+			ifs >> calibration_matrix[i][j][0].y;
+			ifs >> calibration_matrix[i][j][1].x;
+			ifs >> calibration_matrix[i][j][1].y;
+		}
+	}
+	ifs.close();
+
+	// for (int i = 0; i < PITCH_POINTS; ++i) {
+	// 	for (int j = 0; j < YAW_POINTS; ++j) {
+	// 		std::cout << calibration_matrix[i][j][0].x;
+	// 		std::cout << " " << calibration_matrix[i][j][0].y;
+	// 		std::cout << "  " << calibration_matrix[i][j][1].x;
+	// 		std::cout << " " << calibration_matrix[i][j][1].y;
+	// 		std::cout << "   ";
+	// 	}
+	// 	std::cout << '\n';
+	// }
 
 	//***************************************************
 	//*************** Initialise ROS ********************
@@ -143,6 +156,19 @@ int main(int argc, char** argv)
 
 	sensor_msgs::Image msg;
 
+	//***************************************************
+	//******** Initialise a NaoQi LED proxy **********
+	//***************************************************
+	AL::ALLedsProxy leds("127.0.0.1", 9559);
+
+	//
+	// std::vector<std::string> grps = leds.listGroups();
+	// for (std::vector<std::string>::iterator i = grps.begin(); i != grps.end(); ++i)
+	// {
+	// 	std::cout << "[edinferno_coach.cpp] " << *i << std::endl;
+	// }
+
+
 
 	//***************************************************
 	//******** Initialise a NaoQi motion proxy **********
@@ -152,6 +178,7 @@ int main(int argc, char** argv)
 
     // Create an ALMotionProxy to call the methods to move NAO's head.
     AL::ALMotionProxy motion("127.0.0.1", 9559);
+
 
 
     // Ensure sitting position
@@ -173,22 +200,42 @@ int main(int argc, char** argv)
 
 	const int REMEMBER_BALL = 50;
 	int ball_not_seen = 0;
+
+	GameStrategy strategy;
+
 	while(ros::ok())
 	{
 		if(img_available)
 		{
 			img_available = false;
-			// std::cout << "[edinferno_coach.cpp] Segmentation " << std::endl;
 			Segmentation::SegmentImage(img, pixel_map);
-			// std::cout << "[edinferno_coach.cpp] Detection " << std::endl;
 			DetectedBall b = BallDetection::Detect(pixel_map);
-			// std::cout << "[edinferno_coach.cpp] Control " << std::endl;
+
+			strategy = KeepCalmAndCarryOn;
+
 			if(b.detected)
 			{
+				std::vector<float> angles = motion.getAngles(joint_names, true);
+				strategy = decideStrategy(angles[0], angles[1], b.cntr, img);
+				switch(strategy) {
+					case Attack:
+						// std::cout << "[edinferno_coach.cpp] attack " << std::endl;
+						leds.fadeRGB("FaceLeds", 0x00FF0000, 1);
+						break;
+					case Defence:
+						// std::cout << "[edinferno_coach.cpp] defence " << std::endl;
+						leds.fadeRGB("FaceLeds", 0x0000FF00, 1);
+						break;
+					case KeepCalmAndCarryOn:
+						// std::cout << "[edinferno_coach.cpp] keep calm " << std::endl;
+						leds.fadeRGB("FaceLeds", 0x000000FF, 1);
+						break;
+				}
+
 				ball_not_seen = 0;
 
-				cv::circle(img, b.cntr, b.r, cv::Scalar(0,255,255), 2, 8, 0);
-				cv::circle(img, b.cntr, 2, cv::Scalar(255,0,0), 2, 8, 0);
+				//cv::circle(img, b.cntr, b.r, cv::Scalar(0,255,255), 2, 8, 0);
+				//cv::circle(img, b.cntr, 2, cv::Scalar(255,0,0), 2, 8, 0);
 
 				d_yaw = 0.0005 * (b.cntr.x - img.cols / 2);
 				if(-0.001 < d_yaw && d_yaw < 0.001) d_yaw = 0;
@@ -209,39 +256,38 @@ int main(int argc, char** argv)
 				++ball_not_seen;
 			}
 
-			// std::cout << "[edinferno_coach.cpp] ball_not_seen " << ball_not_seen << std::endl;
-
+			// Search for the ball
 			if(ball_not_seen >= REMEMBER_BALL)
 			{
 				std::vector<float> angls = motion.getAngles(joint_names, true);
 
 				float err_yaw = fabs(angls[0] - searching_head_yaw);
 				float err_pitch = fabs(angls[1] - searching_head_pitch);
-				// std::cout << "[edinferno_coach.cpp] angls " << angls[0] << " " << angls[1] << std::endl;
-				// std::cout << "[edinferno_coach.cpp] " << err_yaw << " " << err_pitch << std::endl;
+
+				// Check if new angles should be picked
 				if(ball_not_seen == REMEMBER_BALL ||
 				   (err_yaw < 0.25 && err_pitch < 0.25))
 				{
 
 					searching_head_yaw = HEAD_YAW_MIN + (HEAD_YAW_MAX - HEAD_YAW_MIN) * ((rand() % 101) / 100.0f);
 					searching_head_pitch = HEAD_PITCH_MIN + (HEAD_PITCH_MAX - HEAD_PITCH_MIN) * ((rand() % 101) / 100.0f);
-					// std::cout << "[edinferno_coach.cpp] New Searching Angles " << searching_head_yaw << " " << searching_head_pitch << std::endl;
+
+					head_yaw = searching_head_yaw;
+					head_pitch = searching_head_pitch;
+
 					motion.setAngles(joint_names, AL::ALValue::array(searching_head_yaw, searching_head_pitch), 0.1f);
 				}
 			}
 
-    		ConvertImage::MatToMsgCopy(img, "/world", msg);
-    		seg_pub.publish(msg);
+			std::cout << "[edinferno_coach.cpp] Frame " << ball_not_seen << std::endl;
+			Game::BroadcastStrategy(strategy);
 
-    		// std::cout << "[edinferno_coach.cpp] Published " << std::endl;
+    		// ConvertImage::MatToMsgCopy(img, "/world", msg);
+    		// seg_pub.publish(msg);
 		}
-		else
-		{
-			std::cout << "[edinferno_coach.cpp] No image " << std::endl;
-		}
-		// std::cout << "[edinferno_coach.cpp] SpinOnce " << std::endl;
+
+
 		ros::spinOnce();
-		// std::cout << "[edinferno_coach.cpp] Sleep " << std::endl;
 		r.sleep();
 	}
 	motion.setStiffnesses(joint_names, AL::ALValue::array(0.0f, 0.0f));
